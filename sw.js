@@ -1,5 +1,5 @@
 // IYF service worker: uygulama dosyalarını önbelleğe alır, internet olmadan da açılır.
-const CACHE = 'iyf-v4';
+const CACHE = 'iyf-v5';
 const FILES = ['./', './index.html', './manifest.json', './icon-180.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

@@ -389,7 +389,7 @@ const VIEWS = {
       <div class="date">${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}, ${DAYS[ti]}</div>
       <div class="card"><h3>Bugünün programı <button class="btn sm ghost" data-a="goProg" data-m="weekly">Düzenle</button></h3>
         ${plan.length ? `<div class="list" style="margin:0;background:var(--card2)">${plan.map(p => `
-          <div class="item"><span class="badge">${esc(p.time || '—')}</span><div class="t"><b>${esc(p.title)}</b>${p.note?`<small>${esc(p.note)}</small>`:''}</div></div>`).join('')}</div>`
+          <div class="item"><span class="badge">${esc(p.time ? p.time + (p.end ? '–' + p.end : '') : '—')}</span><div class="t"><b>${esc(p.title)}</b>${p.note?`<small>${esc(p.note)}</small>`:''}</div></div>`).join('')}</div>`
           : '<div class="empty">Bugün için plan yok.</div>'}
       </div>
       <div class="card"><h3>Bugünün antrenmanı ${wo.length?`<span class="badge">${doneCount}/${wo.length}</span>`:''}</h3>
@@ -414,10 +414,11 @@ const VIEWS = {
       <div class="seg"><button data-a="progMode" data-m="weekly" class="${isW?'on':''}">Haftalık</button><button data-a="progMode" data-m="sport" class="${!isW?'on':''}">Spor</button></div>
       <div class="days">${DS.map((n,i) => `<button data-a="day" data-i="${i}" class="${UI.day===i?'on':''} ${todayIdx()===i?'today':''}">${n}</button>`).join('')}</div>
       <div class="list">${items.length ? items.map(it => isW
-          ? `<button class="item" data-a="wEdit" data-id="${it.id}"><span class="badge">${esc(it.time || '—')}</span><div class="t"><b>${esc(it.title)}</b>${it.note?`<small>${esc(it.note)}</small>`:''}</div><span class="chev">›</span></button>`
+          ? `<button class="item" data-a="wEdit" data-id="${it.id}"><span class="badge">${esc(it.time ? it.time + (it.end ? '–' + it.end : '') : '—')}</span><div class="t"><b>${esc(it.title)}</b>${it.note?`<small>${esc(it.note)}</small>`:''}</div><span class="chev">›</span></button>`
           : workoutRow(it, UI.day, true)).join('')
         : `<div class="empty">${DAYS[UI.day]} için ${isW ? 'plan' : 'antrenman'} yok.</div>`}</div>
-      <button class="addbtn" data-a="${isW ? 'wAdd' : 'sAdd'}">${svg('plus')} ${isW ? 'Plan ekle' : 'Egzersiz ekle'}</button>
+      ${isW ? `<div class="row" style="margin-bottom:12px"><button class="addbtn" style="margin:0" data-a="wAdd">${svg('plus')} Plan ekle</button><button class="addbtn" style="margin:0" data-a="progBulk">${svg('copy')} Toplu ekle</button></div>`
+            : `<button class="addbtn" data-a="sAdd">${svg('plus')} Egzersiz ekle</button>`}
       ${!isW && items.length ? `<button class="btn ghost" data-a="sCopy">Bu günü başka güne kopyala</button>` : ''}`;
   },
 
@@ -481,23 +482,50 @@ function cardList(){
 /* Keep notundan yapıştırılan metni kayıtlara ayırır (sadece bu cihazda) */
 const RX = {
   pass:/şifre|sifre|parola|pass|pw|pin/i,
-  user:/kullanıcı|kullanici|user|mail|e-posta|eposta|hesap|giriş|giris|login|^id$|tc|telefon|tel/i,
-  url:/site|url|link|web|adres/i,
-  title:/^(ad|adı|başlık|baslik|uygulama|app|isim|platform)$/i,
+  user:/kullanıcı|kullanici|user|e-?posta|eposta|mail|hesap|giriş|giris|login|^id$|^tc|telefon|^tel|numara/i,
+  url:/site|url|link|web|domain|alan ad/i,
+  title:/^(ad|adı|başlık|baslik|uygulama|app|isim|platform|hizmet|servis|marka|ne)$/i,
 };
-function splitKV(l){ const m = l.match(/^([^:=]{1,30}?)\s*[:=]\s*(.+)$/); return m ? [m[1].trim(), m[2].trim()] : null; }
+const DOMAIN = /\b(?:https?:\/\/)?(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|co|app|dev|gov|edu|me|tv|info|biz|ai|gg|store|shop|online|xyz|tr|uk|de))(?:\.[a-z]{2})?(?:\/\S*)?/i;
+const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+function nameFromUrl(u){
+  const m = String(u||'').match(DOMAIN);
+  const host = (m ? m[1] : String(u||'')).replace(/^www\./i,'');
+  const parts = host.split('.').filter(p => !/^(com|net|org|co|gov|edu|tr|uk|de|www|io|app|dev)$/i.test(p));
+  return cap(parts.pop() || host);
+}
+function splitKV(l){ const m = l.match(/^([^:=]{1,30}?)\s*[:=]\s*(.*)$/); return m && m[2].trim() ? [m[1].trim(), m[2].trim()] : null; }
+function cat(k){ return RX.pass.test(k) ? 'pass' : RX.user.test(k) ? 'user' : RX.url.test(k) ? 'url' : RX.title.test(k) ? 'title' : null; }
+
 function parseCard(lines){
   const joined = lines.join('\n');
   const m = joined.match(/(?:\d[ -]?){14,18}\d/);
   if (!m) return null;
   const number = digitsOnly(m[0]);
   if (number.length < 15 || number.length > 19) return null;
-  const rest = joined.replace(m[0], ' ');
-  const exp = (rest.match(/\b(0[1-9]|1[0-2])\s*[\/.-]\s*(\d{4}|\d{2})\b/) || [])[0] || '';
-  const cvv = ((rest.match(/(?:cvv|cvc|cv2|güvenlik|guvenlik)\D{0,6}(\d{3,4})/i) || [])[1]) || '';
-  const prefix = joined.slice(0, m.index).split('\n').pop().replace(/[:=\-\s]+$/,'').trim();
-  const nameLine = lines.find(l => !l.includes(m[0].trim()) && !/\d{3,}/.test(l)) || prefix || 'Kart';
-  return {kind:'card', name:nameLine.replace(/[:=]\s*$/,''), holder:'', number, exp:exp.replace(/\s/g,''), cvv, note:''};
+  let rest = joined.slice(0, m.index) + ' \n ' + joined.slice(m.index + m[0].length);
+  // Son kullanma: 12/28, 12.2028, 12-28 ya da "SKT 1228"
+  let exp = '';
+  const e1 = rest.match(/\b(0[1-9]|1[0-2])\s*[\/.\-]\s*(20\d{2}|\d{2})\b/);
+  const e2 = rest.match(/(?:skt|son\s*kul\w*|exp\w*|geçerlilik|gecerlilik)\D{0,6}(0[1-9]|1[0-2])\s*(20\d{2}|\d{2})\b/i);
+  const em = e1 || e2;
+  if (em){ exp = `${em[1]}/${em[2].slice(-2)}`; rest = rest.replace(em[0], ' '); }
+  // CVV: etiketli ya da tek başına duran 3-4 haneli sayı
+  let cvv = ((rest.match(/(?:cvv2?|cvc2?|cv2|güvenlik|guvenlik|arka|kod)\D{0,12}?(\d{3,4})\b/i) || [])[1]) || '';
+  if (!cvv){ const lone = rest.match(/(?:^|[^\d\/.\-])(\d{3,4})(?![\d\/.\-])/); if (lone && !/^20\d{2}$/.test(lone[1])) cvv = lone[1]; }
+  const holder = ((rest.match(/(?:sahibi|isim|ad soyad|name)\s*[:=]?\s*([A-Za-zÇĞİÖŞÜçğıöşü .]{3,40})/i) || [])[1] || '').trim();
+  const prefix = joined.slice(0, m.index).split('\n').pop().replace(/(kart\s*)?(no|numarası|numarasi|number)?\s*[:=\-]*\s*$/i,'').trim();
+  const nameLine = lines.find(l => !/\d{3,}/.test(l) && !/^(cvv|cvc|skt|son)/i.test(l) && !/sahibi/i.test(l)) || prefix || 'Kart';
+  return {kind:'card', name:nameLine.replace(/[:=]\s*$/,'').trim() || prefix || 'Kart', holder, number, exp, cvv, note:''};
+}
+
+function finishPw(r){
+  if (!r.url && DOMAIN.test(r.title)) { r.url = r.title.match(DOMAIN)[0]; r.title = nameFromUrl(r.url); }
+  if (!r.title && r.url) r.title = DOMAIN.test(r.url) ? nameFromUrl(r.url) : cap(r.url);
+  if (!r.pass && r.loose.length){ if (!r.user && r.loose.length >= 2) r.user = r.loose.shift(); r.pass = r.loose.shift(); }
+  else if (!r.user && r.loose.length && r.pass) r.user = r.loose.shift();
+  r.rest.push(...r.loose);
+  return {kind:'pw', title:r.title || 'Başlıksız', user:r.user, pass:r.pass, url:r.url, note:r.rest.join('\n')};
 }
 function parseBulk(text){
   const blocks = text.replace(/\r/g,'').split(/\n\s*\n/).map(b => b.split('\n').map(l => l.trim()).filter(Boolean)).filter(b => b.length);
@@ -505,35 +533,87 @@ function parseBulk(text){
   for (const lines of blocks){
     const card = parseCard(lines);
     if (card){ out.push(card); continue; }
-    // Her satır "Instagram: şifre" gibiyse: her satır ayrı kayıt
     const kvs = lines.map(splitKV);
-    if (lines.length > 1 && kvs.every(kv => kv && !RX.pass.test(kv[0]) && !RX.user.test(kv[0]) && !RX.url.test(kv[0]) && !RX.title.test(kv[0]))){
-      kvs.forEach(([k,v]) => { const parts = v.split(/\s+[\/|-]\s+|\s{2,}/); out.push(parts.length >= 2 ? {kind:'pw', title:k, user:parts[0], pass:parts.slice(1).join(' '), url:'', note:''} : {kind:'pw', title:k, user:'', pass:v, url:'', note:''}); });
+    // Her satır "Instagram: şifre" gibiyse: her satır ayrı kayıt
+    if (lines.length > 1 && kvs.every(kv => kv && !cat(kv[0]))){
+      kvs.forEach(([k,v]) => {
+        const parts = v.split(/\s+[\/|-]\s+|\s{2,}|\s*,\s*/);
+        const r = {title:k, user:'', pass:'', url:'', loose:[], rest:[]};
+        if (DOMAIN.test(k)) { r.url = k; r.title = nameFromUrl(k); }
+        if (parts.length >= 2){ r.user = parts[0]; r.pass = parts.slice(1).join(' '); } else r.pass = v;
+        out.push(finishPw(r));
+      });
       continue;
     }
-    let title = '', user = '', pass = '', url = ''; const loose = [], rest = [];
+    // Sırayla oku; aynı alan ikinci kez gelirse yeni kayıt başlat (boş satır olmadan alt alta yazılmış kayıtlar için)
+    let r = null;
+    const start = () => (r = {title:'', user:'', pass:'', url:'', loose:[], rest:[]});
+    const flush = () => { if (r && (r.title || r.user || r.pass || r.url)) out.push(finishPw(r)); start(); };
+    start();
     lines.forEach((l, i) => {
       const kv = kvs[i];
       if (kv){
-        const [k, v] = kv;
-        if (RX.pass.test(k) && !pass) pass = v;
-        else if (RX.url.test(k) && !url) url = v;
-        else if (RX.user.test(k) && !user) user = v;
-        else if (RX.title.test(k) && !title) title = v;
-        else if (!title && i === 0) { title = k; loose.push(v); }
-        else rest.push(l);
-      } else if (!title) title = l;
-      else if (!user && /@/.test(l)) user = l;
-      else if (!url && /^(https?:\/\/|www\.)/i.test(l)) url = l;
-      else loose.push(l);
+        const [k, v] = kv; let c = cat(k);
+        if (c){
+          if (c === 'url' && !DOMAIN.test(v)) c = 'title';   // "Site: Instagram" → başlık
+          if (r[c]) flush();
+          r[c] = c === 'title' ? cap(v) : v; return;
+        }
+        if (!r.title && !r.pass){ r.title = k; if (DOMAIN.test(k)) { r.url = k.match(DOMAIN)[0]; r.title = nameFromUrl(k); } r.loose.push(v); return; }
+        r.rest.push(l); return;
+      }
+      if (DOMAIN.test(l) && !/@/.test(l) && !/\s/.test(l)){
+        if (r.url && (r.pass || r.user)) flush();
+        if (!r.url){ r.url = l; return; }
+      }
+      if (/@/.test(l) && !/\s/.test(l)){ if (r.user && r.pass) flush(); if (!r.user){ r.user = l; return; } }
+      if (!r.title && r.url && !r.pass){ r.loose.push(l); return; }   // başlık siteden gelecek
+      if (!r.title){ if (r.pass || r.user) { flush(); } r.title = l; return; }
+      if (r.pass && r.user){ flush(); r.title = l; return; }   // yeni kayıt başlığı
+      if (!r.user && /@/.test(l)){ r.user = l; return; }
+      r.loose.push(l);
     });
-    if (!user && !pass && loose.length >= 2){ user = loose.shift(); pass = loose.shift(); }
-    else if (!pass && loose.length) pass = loose.shift();
-    else if (!user && loose.length && pass) user = loose.shift();
-    rest.push(...loose);
-    out.push({kind:'pw', title: title || 'Başlıksız', user, pass, url, note: rest.join('\n')});
+    flush();
   }
   return out;
+}
+
+/* Haftalık program metnini günlere ayırır: "Pazartesi" başlıkları ya da satır başında gün adı */
+const DAY_RX = [[5,/^(cumartesi|cmt|ctesi)\b/],[0,/^(pazartesi|pzt|ptesi)\b/],[1,/^(sali|sal)\b/],[2,/^(carsamba|car|crs)\b/],[3,/^(persembe|per|prs)\b/],[4,/^(cuma|cum)\b/],[6,/^(pazar|paz)\b/]];
+const trLow = s => s.toLocaleLowerCase('tr').replace(/ı/g,'i').replace(/ş/g,'s').replace(/ç/g,'c').replace(/ğ/g,'g').replace(/ö/g,'o').replace(/ü/g,'u');
+function matchDay(l){
+  const o = l.trim(), t = trLow(o);
+  for (const [i, rx] of DAY_RX){ const m = t.match(rx); if (m) return [i, o.slice(m[0].length)]; }
+  return null;
+}
+function parseProgram(text){
+  const out = []; let day = null;
+  for (let raw of text.replace(/\r/g,'').split('\n')){
+    let l = raw.trim(); if (!l) continue;
+    const d = matchDay(l);
+    if (d){ day = d[0]; l = d[1].replace(/^[\s:–\-—,.]+/,''); if (!l) continue; }
+    if (day === null) continue;
+    const tm = l.match(/(\d{1,2})[:.](\d{2})(?:\s*[-–—]\s*(\d{1,2})[:.](\d{2}))?/);
+    let time = '', end = '';
+    if (tm){ time = `${tm[1].padStart(2,'0')}:${tm[2]}`; if (tm[3]) end = `${tm[3].padStart(2,'0')}:${tm[4]}`; l = (l.slice(0, tm.index) + ' ' + l.slice(tm.index + tm[0].length)); }
+    l = l.replace(/^[\s:–\-—,|]+|[\s:–\-—,|]+$/g,'').replace(/\s{2,}/g,' ');
+    let title = l, note = '';
+    const sp = l.match(/^(.+?)\s*[(\[]\s*(.+?)\s*[)\]]$/) || l.match(/^(.+?)\s+[\/|]\s+(.+)$/);
+    if (sp){ title = sp[1]; note = sp[2]; }
+    if (!title) continue;
+    out.push({day, time, end, title, note, sel:true});
+  }
+  return out;
+}
+function progPreview(){
+  const items = sheetExtra.prog, sel = items.filter(x => x.sel).length;
+  openSheet(`<h2>${items.length} plan bulundu</h2><p class="hint">Eklemek istemediklerinin işaretini kaldır. Mevcut planların silinmez, bunlar eklenir.</p>
+    <div class="list" style="background:var(--card2);margin-top:10px">${items.map((x,i) => `
+      <div class="bulkrow"><button class="check ${x.sel?'on':''}" data-a="progToggle" data-i="${i}" aria-label="Seç"></button>
+      <div class="t" style="flex:1;min-width:0"><b style="display:block"><span class="tag">${DS[x.day]}</span> ${esc(x.title)}</b>
+      <small style="color:var(--muted)">${esc(x.time ? x.time + (x.end ? '–' + x.end : '') : 'saat yok')}${x.note ? ' · ' + esc(x.note) : ''}</small></div></div>`).join('')}</div>
+    <button class="btn" data-a="progSave" ${sel?'':'disabled'}>Seçilenleri ekle (${sel})</button>
+    <button class="btn ghost" data-a="closeSheet">Vazgeç</button>`);
 }
 const maskPw = p => p ? p.slice(0,2) + '•••' : '—';
 function bulkPreview(){
@@ -644,6 +724,22 @@ const A = {
   progMode: d => { UI.progMode = d.m; render(); },
   day: d => { UI.day = +d.i; render(); },
   wAdd: () => weeklyForm(),
+  progBulk: () => openSheet(`<h2>Programı toplu ekle</h2>
+    <p class="hint">Programını yapıştır. Gün adını başlık olarak ya da satır başına yaz, saatleri 09:30 veya 09:30-11:00 şeklinde yaz.</p>
+    <textarea class="input" id="progText" style="min-height:240px" placeholder="Pazartesi&#10;09:30-11:00 Makro İktisat (B-204)&#10;13:00 Spor&#10;&#10;Salı&#10;10:00 İstatistik"></textarea>
+    <button class="btn" data-a="progParse">Ayrıştır</button>
+    <button class="btn ghost" data-a="closeSheet">Vazgeç</button>`),
+  progParse: () => {
+    const items = parseProgram($('#progText').value);
+    if (!items.length) return toast('Gün adı bulunamadı');
+    sheetExtra.prog = items; progPreview();
+  },
+  progToggle: d => { const x = sheetExtra.prog[+d.i]; x.sel = !x.sel; progPreview(); },
+  progSave: () => {
+    const sel = sheetExtra.prog.filter(x => x.sel);
+    sel.forEach(({day, sel:_, ...x}) => DB.weekly[day].push({id:uid(), ...x}));
+    closeSheet(); persist(); render(); toast(`${sel.length} plan eklendi`);
+  },
   wEdit: d => weeklyForm(DB.weekly[UI.day].find(x => x.id === d.id)),
   sAdd: () => workoutForm(),
   sEdit: d => workoutForm(DB.workouts[UI.day].find(x => x.id === d.id)),
@@ -775,16 +871,17 @@ function weeklyForm(it){
   formSheet({
     title: it ? 'Planı düzenle' : `${DAYS[day]} için plan`,
     fields: [
-      {name:'time', label:'Saat', type:'time', value:it?.time},
+      {name:'time', label:'Başlangıç', type:'time', value:it?.time},
+      {name:'end', label:'Bitiş (isteğe bağlı)', type:'time', value:it?.end},
       {name:'title', label:'Ne yapılacak?', value:it?.title, placeholder:'Örn. Makro İktisat dersi'},
       {name:'note', label:'Not (isteğe bağlı)', value:it?.note, placeholder:'Örn. B-204'},
       ...(it ? [] : [{name:'repeat', label:'Tekrar', type:'select', value:'no', options:[['no','Sadece bu gün'],['weekdays','Hafta içi her gün'],['all','Her gün']]}]),
     ],
     onSave: v => {
       if (!v.title) { toast('Başlık gerekli'); return false; }
-      if (it) { Object.assign(it, {time:v.time, title:v.title, note:v.note}); return; }
+      if (it) { Object.assign(it, {time:v.time, end:v.end, title:v.title, note:v.note}); return; }
       const days = v.repeat === 'weekdays' ? [0,1,2,3,4] : v.repeat === 'all' ? [0,1,2,3,4,5,6] : [day];
-      days.forEach(i => DB.weekly[i].push({id:uid(), time:v.time, title:v.title, note:v.note}));
+      days.forEach(i => DB.weekly[i].push({id:uid(), time:v.time, end:v.end, title:v.title, note:v.note}));
     },
     onDelete: it && (() => { DB.weekly[day] = DB.weekly[day].filter(x => x.id !== it.id); }),
   });
