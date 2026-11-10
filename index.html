@@ -27,7 +27,7 @@ button{cursor:pointer;border:0;background:none}
 
 /* Kilit ekranı */
 #lock{min-height:100vh;display:flex;flex-direction:column;justify-content:center;padding:calc(var(--st) + 24px) 24px calc(var(--sb) + 24px);max-width:420px;margin:0 auto}
-.logo{width:84px;height:84px;border-radius:22px;background:linear-gradient(180deg,#0f3d26,#16a34a);display:grid;place-items:center;font-weight:800;font-size:28px;margin:0 auto 18px;letter-spacing:1px}
+.logo{width:96px;height:96px;border-radius:24px;display:block;margin:0 auto 18px}
 #lock h1{text-align:center;margin:0 0 6px;font-size:24px}
 #lock p.sub{text-align:center;color:var(--muted);margin:0 0 24px;font-size:14px}
 .err{color:var(--danger);font-size:14px;min-height:20px;text-align:center;margin-top:8px}
@@ -118,7 +118,7 @@ nav button.on{color:var(--accent)}
 
 <!-- KİLİT EKRANI -->
 <section id="lock">
-  <div class="logo">IYF</div>
+  <img class="logo" src="icon-512.png" alt="IYF">
   <h1 id="lockTitle">IYF</h1>
   <p class="sub" id="lockSub"></p>
   <form id="lockForm" autocomplete="off">
