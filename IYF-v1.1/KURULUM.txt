@@ -1,0 +1,17 @@
+IYF - iPhone'a kurulum (bir kerelik, ~10 dk)
+
+1) github.com'da ücretsiz hesap aç (yoksa).
+2) Sağ üst "+" > New repository > adı: iyf > Public > Create.
+3) "uploading an existing file" linkine tıkla, bu klasördeki TÜM dosyaları
+   (index.html, manifest.json, sw.js, icon-*.png) sürükle > Commit changes.
+4) Repo > Settings > Pages > Source: "Deploy from a branch", Branch: main / (root) > Save.
+5) 1-2 dk sonra adres hazır: https://KULLANICIADIN.github.io/iyf/
+6) iPhone'da bu adresi SAFARI ile aç > Paylaş > "Ana Ekrana Ekle".
+7) Ana ekrandaki IYF ikonundan aç ve ana parolanı belirle.
+
+Notlar:
+- Kodda hiçbir kişisel veri yok; verilerin sadece telefonunda, şifreli duruyor.
+- Ana ekran uygulamasının verisi Safari'den ayrıdır: kurulumu ikondan açarak yap.
+- Ana parolayı unutursan veriler açılamaz. Ayarlar > Yedek al ile ara sıra
+  yedeği iCloud Drive'a kaydet.
+- Güncelleme: yeni dosyaları aynı repoya yükle, uygulamayı kapatıp aç.
