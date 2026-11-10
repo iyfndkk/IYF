@@ -2,6 +2,8 @@
 <html lang="tr">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -112,21 +114,31 @@ nav button.on{color:var(--accent)}
 #toast.show{opacity:1}
 .note-body{white-space:pre-wrap}
 .hint{color:var(--muted);font-size:13px;margin-top:6px}
+.ccard{background:linear-gradient(135deg,#0d3320,#166534 60%,#22a05a);border-radius:16px;padding:18px;aspect-ratio:1.586;display:flex;flex-direction:column;justify-content:space-between;margin:10px 0 4px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+.ccard .top{display:flex;justify-content:space-between;font-weight:700}
+.ccard .num{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:20px;letter-spacing:2px}
+.ccard .bot{display:flex;justify-content:space-between;font-size:13px;opacity:.9}
+.bulkrow{display:flex;gap:12px;align-items:center;padding:11px 12px;border-bottom:1px solid var(--line)}
+.bulkrow:last-child{border-bottom:0}
+.tag{font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;background:var(--card);color:var(--accent)}
 </style>
 </head>
 <body>
 
-<!-- KİLİT EKRANI -->
+<!-- GİRİŞ EKRANI -->
 <section id="lock">
   <img class="logo" src="icon-512.png" alt="IYF">
-  <h1 id="lockTitle">IYF</h1>
-  <p class="sub" id="lockSub"></p>
-  <form id="lockForm" autocomplete="off">
-    <input class="input" id="pw1" type="password" placeholder="Ana parola" autocomplete="current-password">
-    <input class="input" id="pw2" type="password" placeholder="Ana parola (tekrar)" style="margin-top:10px" hidden>
-    <button class="btn" id="lockBtn" type="submit">Kilidi aç</button>
-    <div class="err" id="lockErr"></div>
+  <h1>IYF</h1>
+  <div id="enterBox">
+    <button class="btn" id="enterBtn" type="button">Oturum aç</button>
+  </div>
+  <form id="migrateForm" autocomplete="off" hidden>
+    <p class="sub">Güncelleme: eski ana parolanı son bir kez gir. Bundan sonra parola sorulmayacak.</p>
+    <input class="input" id="oldPw" type="password" placeholder="Eski ana parola">
+    <button class="btn" type="submit">Devam et</button>
   </form>
+  <div class="err" id="lockErr"></div>
+  <button class="btn ghost" id="lockRestore" type="button" hidden>Yedekten geri yükle</button>
 </section>
 
 <!-- UYGULAMA -->
@@ -141,13 +153,16 @@ nav button.on{color:var(--accent)}
 
 <div id="sheet" hidden><div class="sheet-card" id="sheetCard"></div></div>
 <div id="toast"></div>
+<input type="file" id="bkFile" accept=".json,application/json" hidden>
 
 <script>
 'use strict';
 /* =========================================================
-   IYF — kişisel, şifreli, sadece bu cihazda çalışan uygulama
-   Tüm veriler ana parolandan türetilen anahtarla (PBKDF2 +
-   AES-GCM 256) şifrelenip telefonun içinde saklanır.
+   IYF — kişisel, sadece bu cihazda çalışan uygulama
+   - Veriler bu cihaza özel, dışarı aktarılamayan bir AES-256
+     anahtarıyla şifrelenip telefonun içinde saklanır.
+   - Uygulama hiçbir sunucuya veri göndermez (CSP ile engelli).
+   - Yedek dosyaları, yedek alırken belirlenen parolayla şifrelenir.
    ========================================================= */
 
 const STORE = 'iyf.v1';
@@ -167,27 +182,48 @@ function b64(buf){ const a = new Uint8Array(buf); let s = ''; for (let i = 0; i 
 function ub64(s){ return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
 
 /* ---------- Şifreleme ---------- */
-let KEY = null, SALT = null, DB = null;
+let KEY = null, DB = null;
 
+// Cihaz anahtarı: IndexedDB'de, dışarı aktarılamaz (extractable:false).
+function idb(){ return new Promise((res, rej) => { const r = indexedDB.open('iyf-keys', 1); r.onupgradeneeded = () => r.result.createObjectStore('k'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+async function idbGet(k){ const d = await idb(); return new Promise((res, rej) => { const q = d.transaction('k').objectStore('k').get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
+async function idbSet(k, v){ const d = await idb(); return new Promise((res, rej) => { const t = d.transaction('k', 'readwrite'); t.objectStore('k').put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); }
+async function deviceKey(create){
+  let k = await idbGet('main');
+  if (!k && create){ k = await crypto.subtle.generateKey({name:'AES-GCM', length:256}, false, ['encrypt','decrypt']); await idbSet('main', k); }
+  return k;
+}
+async function seal(key, db){
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, enc.encode(JSON.stringify(db)));
+  return JSON.stringify({app:'IYF', v:2, iv:b64(iv), ct:b64(ct)});
+}
+async function unseal(key, blobStr){
+  const s = JSON.parse(blobStr);
+  const pt = await crypto.subtle.decrypt({name:'AES-GCM', iv:ub64(s.iv)}, key, ub64(s.ct));
+  return JSON.parse(dec.decode(pt));
+}
+// Parolalı şifreleme (yedek dosyaları + eski sürüm)
 async function deriveKey(pw, salt, iter = ITER){
   const base = await crypto.subtle.importKey('raw', enc.encode(pw), 'PBKDF2', false, ['deriveKey']);
   return crypto.subtle.deriveKey({name:'PBKDF2', salt, iterations:iter, hash:'SHA-256'}, base, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']);
 }
-async function sealDB(key, salt, db){
+async function sealPw(pw, db){
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await deriveKey(pw, salt);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ct = await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, enc.encode(JSON.stringify(db)));
   return JSON.stringify({app:'IYF', v:1, salt:b64(salt), iter:ITER, iv:b64(iv), ct:b64(ct)});
 }
 async function openBlob(blobStr, pw){
   const s = JSON.parse(blobStr);
-  const salt = ub64(s.salt);
-  const key = await deriveKey(pw, salt, s.iter || ITER);
+  const key = await deriveKey(pw, ub64(s.salt), s.iter || ITER);
   const pt = await crypto.subtle.decrypt({name:'AES-GCM', iv:ub64(s.iv)}, key, ub64(s.ct));
-  return {key, salt, db: JSON.parse(dec.decode(pt))};
+  return {db: JSON.parse(dec.decode(pt))};
 }
 
 function emptyDB(){
-  return {passwords:[], weekly:[[],[],[],[],[],[],[]], workouts:[[],[],[],[],[],[],[]], courses:[], settings:{autolock:5}, created:Date.now()};
+  return {passwords:[], cards:[], weekly:[[],[],[],[],[],[],[]], workouts:[[],[],[],[],[],[],[]], courses:[], settings:{}, created:Date.now()};
 }
 function migrate(db){
   const e = emptyDB();
@@ -200,71 +236,54 @@ function persist(){
   if (!KEY) return;
   const snapshot = DB;
   saveChain = saveChain.then(async () => {
-    try { localStorage.setItem(STORE, await sealDB(KEY, SALT, snapshot)); }
+    try { localStorage.setItem(STORE, await seal(KEY, snapshot)); }
     catch(e){ toast('Kaydedilemedi: ' + e.message); }
   });
   return saveChain;
 }
 
-/* ---------- Kilit ---------- */
-let fails = 0;
+/* ---------- Giriş ---------- */
+const stored = () => { try { return JSON.parse(localStorage.getItem(STORE)); } catch { return null; } };
 function showLock(){
   KEY = null; DB = null;
   closeSheet();
   $('#app').hidden = true; $('#lock').hidden = false;
-  const exists = !!localStorage.getItem(STORE);
-  $('#lockTitle').textContent = exists ? 'IYF' : 'IYF\'ye hoş geldin';
-  $('#lockSub').textContent = exists ? 'Devam etmek için ana parolanı gir.' : 'Bir ana parola belirle. Tüm verilerin bununla şifrelenecek. Unutursan veriler kurtarılamaz.';
-  $('#pw2').hidden = exists;
-  $('#pw1').autocomplete = exists ? 'current-password' : 'new-password';
-  $('#lockBtn').textContent = exists ? 'Kilidi aç' : 'Oluştur';
-  $('#pw1').value = ''; $('#pw2').value = ''; $('#lockErr').textContent = '';
-  setTimeout(() => $('#pw1').focus(), 50);
+  $('#lockErr').textContent = ''; $('#lockRestore').hidden = true;
+  const s = stored();
+  const old = !!(s && s.salt);          // eski parolalı sürüm
+  $('#enterBox').hidden = old; $('#migrateForm').hidden = !old;
+  if (old) setTimeout(() => $('#oldPw').focus(), 50);
 }
 function lockErr(msg){
   $('#lockErr').textContent = msg;
-  const f = $('#lockForm'); f.classList.remove('shake'); void f.offsetWidth; f.classList.add('shake');
+  const f = $('#lock'); f.classList.remove('shake'); void f.offsetWidth; f.classList.add('shake');
 }
-$('#lockForm').addEventListener('submit', async e => {
-  e.preventDefault();
-  const p1 = $('#pw1').value, btn = $('#lockBtn');
-  const exists = !!localStorage.getItem(STORE);
-  if (!exists){
-    if (p1.length < 8) return lockErr('Parola en az 8 karakter olmalı.');
-    if (p1 !== $('#pw2').value) return lockErr('Parolalar eşleşmiyor.');
-    btn.disabled = true; btn.textContent = 'Hazırlanıyor…';
-    SALT = crypto.getRandomValues(new Uint8Array(16));
-    KEY = await deriveKey(p1, SALT);
-    DB = emptyDB();
-    await persist();
-    btn.disabled = false;
-    try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch {}
-    return enterApp();
-  }
-  btn.disabled = true; btn.textContent = 'Açılıyor…';
+$('#enterBtn').addEventListener('click', async () => {
   try {
-    const r = await openBlob(localStorage.getItem(STORE), p1);
-    KEY = r.key; SALT = r.salt; DB = migrate(r.db); fails = 0;
-    btn.disabled = false;
+    const s = localStorage.getItem(STORE);
+    if (!s){
+      KEY = await deviceKey(true); DB = emptyDB(); await persist();
+      try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch {}
+    } else {
+      const k = await deviceKey(false);
+      if (!k) throw new Error('nokey');
+      DB = migrate(await unseal(k, s)); KEY = k;
+    }
     enterApp();
   } catch {
-    fails++;
-    const wait = fails >= 3 ? Math.min(30, 2 ** (fails - 2)) : 0;
-    lockErr(wait ? `Yanlış parola. ${wait} sn bekle.` : 'Yanlış parola.');
-    setTimeout(() => { btn.disabled = false; btn.textContent = 'Kilidi aç'; }, wait * 1000);
-    $('#pw1').select();
+    lockErr('Veriler bu cihazda açılamadı. Yedeğin varsa geri yükleyebilirsin.');
+    $('#lockRestore').hidden = false;
   }
 });
-
-/* Otomatik kilit */
-let lastActive = Date.now(), hiddenAt = 0;
-['pointerdown','keydown','scroll'].forEach(ev => addEventListener(ev, () => lastActive = Date.now(), {passive:true}));
-setInterval(() => {
-  if (KEY && DB && DB.settings.autolock > 0 && Date.now() - lastActive > DB.settings.autolock * 60000) showLock();
-}, 15000);
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { hiddenAt = Date.now(); return; }
-  if (KEY && DB && hiddenAt && Date.now() - hiddenAt > Math.max(1, DB.settings.autolock) * 60000) showLock();
+$('#lockRestore').addEventListener('click', () => $('#bkFile').click());
+$('#migrateForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  try {
+    const r = await openBlob(localStorage.getItem(STORE), $('#oldPw').value);
+    KEY = await deviceKey(true); DB = migrate(r.db);
+    await persist(); $('#oldPw').value = '';
+    enterApp(); toast('Artık parola sorulmayacak');
+  } catch { lockErr('Yanlış parola.'); $('#oldPw').select(); }
 });
 
 /* ---------- Arayüz ---------- */
@@ -284,11 +303,10 @@ const svg = (n, w = 2) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentC
 const TABS = [
   ['home','Ana Sayfa'], ['vault','Şifreler'], ['program','Program'], ['notes','Notlar'], ['settings','Ayarlar']
 ];
-const UI = { tab:'home', progMode:'weekly', day:todayIdx(), course:null, q:'' };
+const UI = { vaultMode:'pw', tab:'home', progMode:'weekly', day:todayIdx(), course:null, q:'' };
 
 function enterApp(){
   $('#lock').hidden = true; $('#app').hidden = false;
-  lastActive = Date.now();
   UI.day = todayIdx();
   render();
 }
@@ -298,7 +316,7 @@ function render(){
   const titles = {home:'IYF', vault:'Şifreler', program:'Program', notes:'Ders Notları', settings:'Ayarlar'};
   $('#title').textContent = titles[UI.tab];
   $('#view').innerHTML = VIEWS[UI.tab]();
-  if (UI.tab === 'vault') bindSearch();
+  if (UI.tab === 'vault' && $('#q')) bindSearch();
 }
 
 function toast(msg){
@@ -344,7 +362,7 @@ function formSheet({title, fields, onSave, onDelete, saveLabel = 'Kaydet'}){
   $('#sheetForm').addEventListener('submit', e => {
     e.preventDefault();
     const vals = Object.fromEntries(new FormData(e.target).entries());
-    const raw = ['pass','body','old','n1','n2','pw'];
+    const raw = ['pass','body','pw','p1','p2','number','cvv'];
     for (const k in vals) if (typeof vals[k] === 'string' && !raw.includes(k)) vals[k] = vals[k].trim();
     if (sheetSave(vals) === false) return;
     closeSheet(); persist(); render();
@@ -381,10 +399,12 @@ const VIEWS = {
   },
 
   vault(){
+    const isP = UI.vaultMode !== 'cards';
     return `
-      <input class="input search" id="q" type="search" placeholder="Ara…" value="${esc(UI.q)}" autocomplete="off">
-      <button class="addbtn" data-a="pwAdd">${svg('plus')} Yeni şifre</button>
-      <div id="pwList">${pwList()}</div>`;
+      <div class="seg"><button data-a="vaultMode" data-m="pw" class="${isP?'on':''}">Şifreler</button><button data-a="vaultMode" data-m="cards" class="${!isP?'on':''}">Kartlar</button></div>
+      ${isP ? `<input class="input search" id="q" type="search" placeholder="Ara…" value="${esc(UI.q)}" autocomplete="off">` : ''}
+      <div class="row" style="margin-bottom:12px"><button class="addbtn" style="margin:0" data-a="${isP?'pwAdd':'cardAdd'}">${svg('plus')} ${isP?'Yeni şifre':'Yeni kart'}</button><button class="addbtn" style="margin:0" data-a="bulk">${svg('copy')} Toplu ekle</button></div>
+      <div id="pwList">${isP ? pwList() : cardList()}</div>`;
   },
 
   program(){
@@ -423,21 +443,15 @@ const VIEWS = {
 
   settings(){
     return `
-      <div class="card"><h3>Güvenlik</h3>
-        <label class="f">Otomatik kilit</label>
-        <select class="input" id="autolock">${[[1,'1 dakika'],[3,'3 dakika'],[5,'5 dakika'],[10,'10 dakika'],[30,'30 dakika']].map(([v,l]) => `<option value="${v}" ${DB.settings.autolock==v?'selected':''}>${l}</option>`).join('')}</select>
-        <button class="btn ghost" data-a="changePw">Ana parolayı değiştir</button>
-      </div>
       <div class="card"><h3>Yedek</h3>
-        <p class="hint" style="margin-top:0">Yedek dosyası da şifrelidir; açmak için ana parolan gerekir. Ara sıra yedek alıp iCloud Drive'a (Dosyalar) kaydet.</p>
+        <p class="hint" style="margin-top:0">Yedek alırken bir yedek parolası belirlersin; dosya bu parolayla şifrelenir. Geri yüklerken aynı parola istenir. Dosyayı iCloud Drive'a (Dosyalar) kaydet.</p>
         <button class="btn" data-a="exportBk">Yedek al</button>
         <button class="btn ghost" data-a="importBk">Yedekten geri yükle</button>
-        <input type="file" id="bkFile" accept=".json,application/json" hidden>
       </div>
       <div class="card"><h3>Tehlikeli bölge</h3>
         <button class="btn danger" data-a="wipe">Tüm verileri sil</button>
       </div>
-      <p class="hint" style="text-align:center">IYF v1 · Veriler sadece bu cihazda, AES-256 ile şifreli.</p>`;
+      <p class="hint" style="text-align:center">IYF v2 · Veriler sadece bu cihazda, AES-256 ile şifreli. Uygulama internete veri göndermez.</p>`;
   },
 };
 
@@ -454,6 +468,85 @@ function bindSearch(){
   const q = $('#q');
   q.addEventListener('input', () => { UI.q = q.value; $('#pwList').innerHTML = pwList(); });
 }
+const digitsOnly = v => String(v||'').replace(/\D/g,'');
+const fmtCard = n => digitsOnly(n).replace(/(.{4})/g,'$1 ').trim();
+const last4 = n => digitsOnly(n).slice(-4);
+function cardBrand(n){ const d = digitsOnly(n); return /^4/.test(d)?'VISA':/^(5[1-5]|2[2-7])/.test(d)?'Mastercard':/^9792/.test(d)?'Troy':/^3[47]/.test(d)?'Amex':''; }
+function cardList(){
+  if (!DB.cards.length) return '<div class="list"><div class="empty">Henüz kart eklemedin.</div></div>';
+  return `<div class="list">${[...DB.cards].sort((a,b)=>a.name.localeCompare(b.name,'tr')).map(c => `
+    <button class="item" data-a="cardView" data-id="${c.id}"><div class="avatar">${esc((c.name||'?').slice(0,1).toUpperCase())}</div><div class="t"><b>${esc(c.name)}</b><small>${esc(cardBrand(c.number))} •••• ${esc(last4(c.number))}${c.exp?' · '+esc(c.exp):''}</small></div><span class="chev">›</span></button>`).join('')}</div>`;
+}
+
+/* Keep notundan yapıştırılan metni kayıtlara ayırır (sadece bu cihazda) */
+const RX = {
+  pass:/şifre|sifre|parola|pass|pw|pin/i,
+  user:/kullanıcı|kullanici|user|mail|e-posta|eposta|hesap|giriş|giris|login|^id$|tc|telefon|tel/i,
+  url:/site|url|link|web|adres/i,
+  title:/^(ad|adı|başlık|baslik|uygulama|app|isim|platform)$/i,
+};
+function splitKV(l){ const m = l.match(/^([^:=]{1,30}?)\s*[:=]\s*(.+)$/); return m ? [m[1].trim(), m[2].trim()] : null; }
+function parseCard(lines){
+  const joined = lines.join('\n');
+  const m = joined.match(/(?:\d[ -]?){14,18}\d/);
+  if (!m) return null;
+  const number = digitsOnly(m[0]);
+  if (number.length < 15 || number.length > 19) return null;
+  const rest = joined.replace(m[0], ' ');
+  const exp = (rest.match(/\b(0[1-9]|1[0-2])\s*[\/.-]\s*(\d{4}|\d{2})\b/) || [])[0] || '';
+  const cvv = ((rest.match(/(?:cvv|cvc|cv2|güvenlik|guvenlik)\D{0,6}(\d{3,4})/i) || [])[1]) || '';
+  const prefix = joined.slice(0, m.index).split('\n').pop().replace(/[:=\-\s]+$/,'').trim();
+  const nameLine = lines.find(l => !l.includes(m[0].trim()) && !/\d{3,}/.test(l)) || prefix || 'Kart';
+  return {kind:'card', name:nameLine.replace(/[:=]\s*$/,''), holder:'', number, exp:exp.replace(/\s/g,''), cvv, note:''};
+}
+function parseBulk(text){
+  const blocks = text.replace(/\r/g,'').split(/\n\s*\n/).map(b => b.split('\n').map(l => l.trim()).filter(Boolean)).filter(b => b.length);
+  const out = [];
+  for (const lines of blocks){
+    const card = parseCard(lines);
+    if (card){ out.push(card); continue; }
+    // Her satır "Instagram: şifre" gibiyse: her satır ayrı kayıt
+    const kvs = lines.map(splitKV);
+    if (lines.length > 1 && kvs.every(kv => kv && !RX.pass.test(kv[0]) && !RX.user.test(kv[0]) && !RX.url.test(kv[0]) && !RX.title.test(kv[0]))){
+      kvs.forEach(([k,v]) => { const parts = v.split(/\s+[\/|-]\s+|\s{2,}/); out.push(parts.length >= 2 ? {kind:'pw', title:k, user:parts[0], pass:parts.slice(1).join(' '), url:'', note:''} : {kind:'pw', title:k, user:'', pass:v, url:'', note:''}); });
+      continue;
+    }
+    let title = '', user = '', pass = '', url = ''; const loose = [], rest = [];
+    lines.forEach((l, i) => {
+      const kv = kvs[i];
+      if (kv){
+        const [k, v] = kv;
+        if (RX.pass.test(k) && !pass) pass = v;
+        else if (RX.url.test(k) && !url) url = v;
+        else if (RX.user.test(k) && !user) user = v;
+        else if (RX.title.test(k) && !title) title = v;
+        else if (!title && i === 0) { title = k; loose.push(v); }
+        else rest.push(l);
+      } else if (!title) title = l;
+      else if (!user && /@/.test(l)) user = l;
+      else if (!url && /^(https?:\/\/|www\.)/i.test(l)) url = l;
+      else loose.push(l);
+    });
+    if (!user && !pass && loose.length >= 2){ user = loose.shift(); pass = loose.shift(); }
+    else if (!pass && loose.length) pass = loose.shift();
+    else if (!user && loose.length && pass) user = loose.shift();
+    rest.push(...loose);
+    out.push({kind:'pw', title: title || 'Başlıksız', user, pass, url, note: rest.join('\n')});
+  }
+  return out;
+}
+const maskPw = p => p ? p.slice(0,2) + '•••' : '—';
+function bulkPreview(){
+  const items = sheetExtra.bulk, sel = items.filter(x => x.sel).length;
+  openSheet(`<h2>${items.length} kayıt bulundu</h2><p class="hint">Eklemek istemediklerinin işaretini kaldır. Ekledikten sonra her kaydı tek tek düzenleyebilirsin.</p>
+    <div class="list" style="background:var(--card2);margin-top:10px">${items.map((x,i) => `
+      <div class="bulkrow"><button class="check ${x.sel?'on':''}" data-a="bulkToggle" data-i="${i}" aria-label="Seç"></button>
+      <div class="t" style="flex:1;min-width:0"><b style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span class="tag">${x.kind==='card'?'KART':'ŞİFRE'}</span> ${esc(x.kind==='card'?x.name:x.title)}</b>
+      <small style="color:var(--muted)">${x.kind==='card' ? `•••• ${esc(last4(x.number))}${x.exp?' · '+esc(x.exp):''}${x.cvv?' · CVV ✓':''}` : `${esc(x.user||'kullanıcı yok')} · ${esc(maskPw(x.pass))}${x.note?' · +not':''}`}</small></div></div>`).join('')}</div>
+    <button class="btn" data-a="bulkSave" ${sel?'':'disabled'}>Seçilenleri ekle (${sel})</button>
+    <button class="btn ghost" data-a="closeSheet">Vazgeç</button>`);
+}
+
 function workoutRow(w, day, editable){
   const d = isDone(w);
   const meta = [w.sets && w.reps ? `${w.sets}×${w.reps}` : (w.sets ? `${w.sets} set` : w.reps ? `${w.reps} tekrar` : ''), w.weight ? `${w.weight} kg` : '', w.note].filter(Boolean).join(' · ');
@@ -493,6 +586,59 @@ const A = {
   pwReveal: (d, el) => { const s = el.closest('.kv').querySelector('[data-secret]'); const p = findPw(sheetExtra.id); s.textContent = s.textContent.startsWith('•') ? p.pass : '••••••••••'; },
   pwCopy: d => { const p = findPw(sheetExtra.id); copy(p[d.k], d.k === 'pass' ? 'Şifre kopyalandı' : 'Kopyalandı'); },
   pwEdit: () => { const id = sheetExtra.id; closeSheet(); pwForm(findPw(id)); },
+  vaultMode: d => { UI.vaultMode = d.m === 'cards' ? 'cards' : 'pw'; render(); },
+
+  /* Kartlar */
+  cardAdd: () => cardForm(),
+  cardView: d => {
+    const c = DB.cards.find(x => x.id === d.id); if (!c) return;
+    sheetExtra.id = c.id;
+    const row = (label, key, val, secret) => val ? `<div class="kv"><div class="t"><small>${label}</small><span class="mono" ${secret?`data-secret="${key}"`:''}>${secret?'•••':esc(val)}</span></div>
+      ${secret?`<button class="iconbtn" data-a="cardReveal" data-k="${key}" aria-label="Göster">${svg('eye')}</button>`:''}
+      <button class="iconbtn" data-a="cardCopy" data-k="${key}" aria-label="Kopyala">${svg('copy')}</button></div>` : '';
+    openSheet(`<h2>${esc(c.name)}</h2>
+      <div class="ccard"><div class="top"><span>${esc(c.name)}</span><span>${esc(cardBrand(c.number))}</span></div>
+        <div class="num" id="ccNum">•••• •••• •••• ${esc(last4(c.number))}</div>
+        <div class="bot"><span>${esc(c.holder||'')}</span><span>${esc(c.exp||'')}</span></div></div>
+      ${row('Kart numarası', 'number', fmtCard(c.number), true)}
+      ${row('Son kullanma', 'exp', c.exp)}
+      ${row('CVV', 'cvv', c.cvv, true)}
+      ${row('Kart sahibi', 'holder', c.holder)}
+      ${c.note ? `<div class="kv"><div class="t"><small>Not</small><span class="note-body">${esc(c.note)}</span></div></div>` : ''}
+      <button class="btn" data-a="cardEdit">Düzenle</button>
+      <button class="btn ghost" data-a="closeSheet">Kapat</button>`);
+  },
+  cardReveal: (d, el) => {
+    const c = DB.cards.find(x => x.id === sheetExtra.id); const s = el.closest('.kv').querySelector('[data-secret]');
+    const hidden = s.textContent.startsWith('•');
+    s.textContent = hidden ? (d.k === 'number' ? fmtCard(c.number) : c[d.k]) : '•••';
+    if (d.k === 'number') $('#ccNum').textContent = hidden ? fmtCard(c.number) : '•••• •••• •••• ' + last4(c.number);
+  },
+  cardCopy: d => { const c = DB.cards.find(x => x.id === sheetExtra.id); copy(d.k === 'number' ? digitsOnly(c.number) : c[d.k]); },
+  cardEdit: () => { const id = sheetExtra.id; closeSheet(); cardForm(DB.cards.find(x => x.id === id)); },
+
+  /* Toplu ekle */
+  bulk: () => openSheet(`<h2>Toplu ekle</h2>
+    <p class="hint">Keep'teki notunu kopyalayıp buraya yapıştır. Metin sadece bu telefonda işlenir, hiçbir yere gönderilmez. Kayıtları boş satırla ayırırsan daha iyi tanır.</p>
+    <textarea class="input" id="bulkText" style="min-height:240px" placeholder="Instagram&#10;yahya@gmail.com&#10;sifre123&#10;&#10;Ziraat kart&#10;4111 1111 1111 1111&#10;12/28 CVV 123"></textarea>
+    <button class="btn" data-a="bulkParse">Ayrıştır</button>
+    <button class="btn ghost" data-a="closeSheet">Vazgeç</button>`),
+  bulkParse: () => {
+    const items = parseBulk($('#bulkText').value);
+    if (!items.length) return toast('Kayıt bulunamadı');
+    items.forEach(x => x.sel = true);
+    sheetExtra.bulk = items; bulkPreview();
+  },
+  bulkToggle: d => { const x = sheetExtra.bulk[+d.i]; x.sel = !x.sel; bulkPreview(); },
+  bulkSave: () => {
+    const now = Date.now(); let p = 0, c = 0;
+    sheetExtra.bulk.filter(x => x.sel).forEach(({kind, sel, ...x}) => {
+      if (kind === 'card'){ DB.cards.push({id:uid(), ...x, created:now, updated:now}); c++; }
+      else { DB.passwords.push({id:uid(), ...x, created:now, updated:now}); p++; }
+    });
+    closeSheet(); persist(); render();
+    toast(`${p} şifre, ${c} kart eklendi`);
+  },
 
   /* Program */
   progMode: d => { UI.progMode = d.m; render(); },
@@ -518,31 +664,25 @@ const A = {
   noteEdit: d => noteForm(DB.courses.find(c => c.id === UI.course).notes.find(n => n.id === d.id)),
 
   /* Ayarlar */
-  changePw: () => formSheet({
-    title: 'Ana parolayı değiştir',
-    fields: [{name:'old', label:'Mevcut parola', type:'password'}, {name:'n1', label:'Yeni parola (en az 8)', type:'password'}, {name:'n2', label:'Yeni parola (tekrar)', type:'password'}],
+  exportBk: () => formSheet({
+    title: 'Yedek al',
+    fields: [{name:'p1', label:'Yedek parolası (en az 6 karakter)', type:'password'}, {name:'p2', label:'Yedek parolası (tekrar)', type:'password'}],
+    saveLabel: 'Yedeği oluştur',
     onSave: v => {
-      if (v.n1.length < 8) { toast('En az 8 karakter'); return false; }
-      if (v.n1 !== v.n2) { toast('Yeni parolalar eşleşmiyor'); return false; }
+      if (v.p1.length < 6) { toast('En az 6 karakter'); return false; }
+      if (v.p1 !== v.p2) { toast('Parolalar eşleşmiyor'); return false; }
       (async () => {
-        try { await openBlob(localStorage.getItem(STORE), v.old); } catch { toast('Mevcut parola yanlış'); return; }
-        SALT = crypto.getRandomValues(new Uint8Array(16));
-        KEY = await deriveKey(v.n1, SALT);
-        await persist(); toast('Ana parola değişti');
+        const data = await sealPw(v.p1, DB);
+        const name = `IYF-yedek-${localDate()}.json`;
+        const file = new File([data], name, {type:'application/json'});
+        if (navigator.canShare && navigator.canShare({files:[file]})) {
+          try { await navigator.share({files:[file], title:name}); return; } catch(e) { if (e.name === 'AbortError') return; }
+        }
+        const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
       })();
     }
   }),
-  exportBk: async () => {
-    await saveChain;
-    const data = localStorage.getItem(STORE);
-    const name = `IYF-yedek-${localDate()}.json`;
-    const file = new File([data], name, {type:'application/json'});
-    if (navigator.canShare && navigator.canShare({files:[file]})) {
-      try { await navigator.share({files:[file], title:name}); return; } catch(e) { if (e.name === 'AbortError') return; }
-    }
-    const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-  },
   importBk: () => $('#bkFile').click(),
   wipe: () => confirmSheet('Şifreler, programlar ve notlar dahil HER ŞEY bu cihazdan silinecek. Yedeğin yoksa geri dönüşü yok.', () => { localStorage.removeItem(STORE); showLock(); }, 'Her şeyi sil'),
 };
@@ -554,29 +694,64 @@ document.addEventListener('click', e => {
   A[el.dataset.a](el.dataset, el, e);
 });
 document.addEventListener('change', e => {
-  if (e.target.id === 'autolock') { DB.settings.autolock = +e.target.value; persist(); toast('Kaydedildi'); }
   if (e.target.id === 'bkFile' && e.target.files[0]) {
     const f = e.target.files[0];
     f.text().then(txt => {
-      let ok = false; try { ok = JSON.parse(txt).app === 'IYF'; } catch {}
+      let ok = false; try { const j = JSON.parse(txt); ok = j.app === 'IYF' && !!j.salt; } catch {}
       if (!ok) return toast('Geçerli bir IYF yedeği değil');
-      formSheet({
-        title: 'Yedeği geri yükle',
-        fields: [{name:'pw', label:'Bu yedeğin ana parolası', type:'password'}],
-        saveLabel: 'Geri yükle (mevcut verilerin yerine geçer)',
-        onSave: v => {
-          (async () => {
-            try { const r = await openBlob(txt, v.pw); KEY = r.key; SALT = r.salt; DB = migrate(r.db); await persist(); toast('Yedek yüklendi'); render(); }
-            catch { toast('Parola yanlış ya da dosya bozuk'); }
-          })();
+      const inApp = !!DB;
+      sheetSave = null;
+      openSheet(`<h2>Yedeği geri yükle</h2><form id="restoreForm">
+        <label class="f">Yedek parolası</label><input class="input" type="password" name="pw" autocomplete="off">
+        ${inApp ? `<label class="f">Nasıl yüklensin?</label><select class="input" name="mode"><option value="merge">Birleştir (mevcut verilere ekle)</option><option value="replace">Yerine koy (mevcut veriler silinir)</option></select>` : ''}
+        <button class="btn" type="submit">Geri yükle</button><button class="btn ghost" type="button" data-a="closeSheet">Vazgeç</button></form>`);
+      $('#restoreForm').addEventListener('submit', async ev => {
+        ev.preventDefault();
+        const v = Object.fromEntries(new FormData(ev.target).entries());
+        let r; try { r = await openBlob(txt, v.pw); } catch { return toast('Parola yanlış ya da dosya bozuk'); }
+        if (inApp && v.mode === 'merge') DB = mergeDB(DB, r.db);
+        else {
+          DB = migrate(r.db);
+          if (!inApp){ KEY = await crypto.subtle.generateKey({name:'AES-GCM', length:256}, false, ['encrypt','decrypt']); await idbSet('main', KEY); }
         }
+        await persist(); closeSheet(); toast('Yedek yüklendi');
+        inApp ? render() : enterApp();
       });
     });
     e.target.value = '';
   }
 });
 
+function mergeDB(base, inc){
+  inc = migrate(inc);
+  const add = (a, b) => { const ids = new Set(a.map(x => x.id)); b.forEach(x => { if (!ids.has(x.id)) a.push(x); }); };
+  add(base.passwords, inc.passwords); add(base.cards, inc.cards);
+  for (let i = 0; i < 7; i++){ add(base.weekly[i], inc.weekly[i]); add(base.workouts[i], inc.workouts[i]); }
+  inc.courses.forEach(c => { const ex = base.courses.find(x => x.id === c.id) || base.courses.find(x => x.name === c.name); if (ex) add(ex.notes, c.notes); else base.courses.push(c); });
+  return base;
+}
+
 /* ---------- Formlar ---------- */
+function cardForm(c){
+  formSheet({
+    title: c ? 'Kartı düzenle' : 'Yeni kart',
+    fields: [
+      {name:'name', label:'Kart adı', value:c?.name, placeholder:'Örn. Ziraat Bankkart'},
+      {name:'number', label:'Kart numarası', value:c ? fmtCard(c.number) : '', inputmode:'numeric', placeholder:'0000 0000 0000 0000'},
+      {name:'exp', label:'Son kullanma (AA/YY)', value:c?.exp, inputmode:'numeric', placeholder:'12/28'},
+      {name:'cvv', label:'CVV', type:'password', inputmode:'numeric', value:c?.cvv},
+      {name:'holder', label:'Kart sahibi', value:c?.holder},
+      {name:'note', label:'Not', type:'textarea', value:c?.note},
+    ],
+    onSave: v => {
+      if (!v.name) { toast('Kart adı gerekli'); return false; }
+      v.number = digitsOnly(v.number);
+      if (c) Object.assign(c, v, {updated:Date.now()});
+      else DB.cards.push({id:uid(), ...v, created:Date.now(), updated:Date.now()});
+    },
+    onDelete: c && (() => { DB.cards = DB.cards.filter(x => x.id !== c.id); }),
+  });
+}
 function pwForm(p){
   formSheet({
     title: p ? 'Şifreyi düzenle' : 'Yeni şifre',
